@@ -7,6 +7,10 @@ usage: merge_burst.py [-h] [-D OUT_DIR] index_file
 
 Merge GSP Bursts belonging to track into a single Product.
 
+Correctly concatenate the bursts belonging to a single track that do
+not contain exactly the same columns. The output is a single file
+containing all the bursts merged together.
+
 positional arguments:
   index_file            Index file containing the list of bursts available
                         over the AOI.
@@ -32,19 +36,22 @@ Python Dependencies:
 """
 # - Python modules
 import os
+import re
 import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
 import zipfile
 # - External modules
+import pandas as pd
 import geopandas as gpd
 from xml_utils import extract_xml_from_zip
 from iride_utils.aoi_info import get_aoi_info
 import xml.etree.ElementTree as ET
 from xml.dom.minidom import parseString
 # - Internal modules
-from read_as_geodataframe import read_as_geodataframe,  rename_columns
+from read_as_geodataframe import read_as_geodataframe,  \
+    rename_columns, concatenate_geodataframes
 from iride_utils.gsp_description import gsp_description, gsp_metadata
 from iride_utils.add_meta_field import add_meta_field
 
@@ -135,12 +142,10 @@ def main() -> None:
 
             # - Load the first burst
             fb_path = Path(track_gdf_c.iloc[0]['Path'])
-            gdf_brst = read_as_geodataframe(fb_path)
 
             # - If latitude and longitude columns are named
             # - differently from the standard ones, rename them.
             # - Temporary fix for the issue with the GSP provided by TRE-A.
-            gdf_brst = rename_columns(gdf_brst)
 
             # - Extract Metadata from the first burst archive
             xml_dicts_ref = extract_xml_from_zip(str(fb_path))[0]
@@ -154,12 +159,13 @@ def main() -> None:
             orbit_dir = track_gdf_c.iloc[0]['Orbit_Dir']
 
             # - Loop over the remaining bursts and merge them
-            for idx in range(1, len(track_gdf_c)):
+            dataframes_list = []
+            for idx in range(0, len(track_gdf_c)):
                 brst_path = Path(track_gdf_c.iloc[idx]['Path'])
-                gdf_brst \
-                    = gdf_brst._append(
-                        rename_columns(read_as_geodataframe(brst_path))
-                )
+                df_to_append = rename_columns(read_as_geodataframe(brst_path))
+                dataframes_list.append(df_to_append)
+
+            gdf_brst = concatenate_geodataframes(dataframes_list)
 
             # - Remove duplicates based on Longitude and Latitude coordinates
             gdf_brst\
@@ -182,10 +188,14 @@ def main() -> None:
                           f"{aoi_info['aoi_tag']}{orbit_dir}{c_type_str}_01")
 
             # - Add another operation specific for the GSP provided by TRE-A.
-            # -
-            for col in gdf_brst.columns:
-                if col.isdigit():
-                    gdf_brst = gdf_brst.rename(columns={col: 'D' + col})
+            # - Dates Column Naming Convention - Dyyyymmdd
+            dates_pattern = re.compile(r"D?(\d+)")
+            dates_cols \
+                = sorted(filter(dates_pattern.fullmatch, gdf_brst.columns))
+            dates_cols = [d[1:] if d.startswith('D') else d for d in
+                          dates_cols]
+            dates_convention = {d: "D" + d for d in dates_cols}
+            gdf_brst = gdf_brst.rename(columns=dates_convention)
 
             if args.format.lower() == 'parquet':
                 out_file = os.path.join(out_dir, out_f_name + '.parquet')

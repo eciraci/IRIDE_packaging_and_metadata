@@ -44,7 +44,9 @@ from iride_utils.aoi_info import get_aoi_info
 import xml.etree.ElementTree as ET
 from xml.dom.minidom import parseString
 
-from read_as_geodataframe import read_as_geodataframe, rename_columns
+from read_as_geodataframe import read_as_geodataframe, rename_columns, \
+    concatenate_geodataframes
+
 from iride_utils.gsp_description import gsp_description, gsp_metadata
 from iride_utils.add_meta_field import add_meta_field
 
@@ -143,11 +145,13 @@ def main() -> None:
         provider_ref = xml_dicts_ref['provider']
 
         # - Loop over the remaining bursts and merge them
-        for idx in range(1, len(gdf_ortho)):
+        dataframes_list = []
+        for idx in range(0, len(gdf_ortho)):
             tile_path = Path(gdf_ortho.iloc[idx]['Path'])
-            gdf_tiles = gdf_ortho._append(rename_columns(
-                    read_as_geodataframe(tile_path))
-            )
+            df_to_append = rename_columns(read_as_geodataframe(tile_path))
+            dataframes_list.append(df_to_append)
+
+        gdf_tiles = concatenate_geodataframes(dataframes_list)
 
         # - Remove duplicates based on Longitude and Latitude coordinates
         gdf_tiles = gdf_tiles.drop_duplicates(subset=['easting', 'northing'])
@@ -163,9 +167,18 @@ def main() -> None:
         print(f"# - Number of bursts merged: {len(gdf_tiles)}")
 
         # - Add another operation specific for the GSP provided by TRE-A.
+        col_names = []
         for col in gdf_tiles.columns:
             if col.isdigit():
-                gdf_tiles = gdf_tiles.rename(columns={col: 'D' + col})
+                gdf_tiles \
+                    = gdf_tiles.rename(columns={col: 'D' + col},
+                                       inplace=True)
+                col_names.append('D' + col)
+            else:
+                col_names.append(col)
+        # - Make sure that the output dataframe has the same columns order
+        # - as the first one.
+        gdf_tiles = gdf_tiles[col_names]
 
         # - Output File Name
         out_f_name = (f"ISS_{in_prod_id_ns}_{in_start_date}"
@@ -304,21 +317,18 @@ def main() -> None:
         dom = parseString(xml_string)
         pretty_xml = dom.toprettyxml()
         # - Write the pretty xml string to file
-        with open(os.path.join(out_dir, metadata_file), 'w') as f:
+        with open(metadata_file, 'w') as f:
             f.write(pretty_xml)
 
         # - Save results inside a compressed archive
-        zip_name\
-            = os.path.join(out_dir,
-                           metadata_file).replace('.xml', '.zip')
+        zip_name = metadata_file.replace('.xml', '.zip')
         # - Create a new zipfile
         print(f"# - Creating new zipfile {zip_name}\n")
         with zipfile.ZipFile(zip_name, 'w') as zip_ref:
-            zip_ref.write(os.path.join(out_dir, metadata_file),
-                          metadata_f_name)
+            zip_ref.write(metadata_file, metadata_f_name)
             zip_ref.write(out_file, os.path.basename(out_file))
         # - Remove the temporary files
-        os.remove(os.path.join(out_dir, metadata_file))
+        os.remove(metadata_file)
         os.remove(out_file)
 
 
